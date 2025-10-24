@@ -21,25 +21,51 @@
     <div id="clock"></div>
     <h2>Logitech BRIO Capture</h2>
 
-    <div class="block">
+    <div class="block" style="position:relative;">
       <img id="video" class="video" src="/stream" alt="Live" />
+      <button id="gearBtn" type="button" style="position:absolute; top:8px; right:8px;">⚙️</button>
     </div>
 
-    <div class="row block">
-      <div>
-        <label for="cameraIndex">Camera (index)</label>
-        <div class="row" style="grid-template-columns: 1fr auto; gap: 8px;">
-          <select id="cameraIndex"></select>
-          <button id="rescanBtn" type="button">Rescan</button>
+    <div id="settingsPanel" class="block" style="display:none; border:1px solid #ddd; padding:12px; border-radius:8px;">
+      <div class="row">
+        <div>
+          <label for="cameraIndex">Camera</label>
+          <div class="row" style="grid-template-columns: 1fr auto; gap: 8px;">
+            <select id="cameraIndex"></select>
+            <button id="rescanBtn" type="button">Rescan</button>
+          </div>
         </div>
-        <label for="cameraName" style="margin-top:8px;">Device name (Windows)</label>
-        <select id="cameraName"></select>
+        <div>
+          <label for="saveDir">Save directory</label>
+          <div class="row" style="grid-template-columns: 1fr auto; gap: 8px;">
+            <input id="saveDir" type="text" placeholder="Path to save images" />
+            <button id="browseBtn" type="button">Browse…</button>
+          </div>
+        </div>
       </div>
-      <div>
-        <label for="saveDir">Save directory</label>
-        <div class="row" style="grid-template-columns: 1fr auto; gap: 8px;">
-          <input id="saveDir" type="text" placeholder="Path to save images" />
-          <button id="browseBtn" type="button">Browse…</button>
+      <div class="block">
+        <label>Camera settings</label>
+        <div class="row" style="grid-template-columns: 1fr 1fr; gap: 12px;">
+          <div>
+            <div>Brightness <span id="val_brightness"></span></div>
+            <input id="brightness" type="range" min="0" max="255" step="1" />
+          </div>
+          <div>
+            <div>Contrast <span id="val_contrast"></span></div>
+            <input id="contrast" type="range" min="0" max="255" step="1" />
+          </div>
+          <div>
+            <div>Saturation <span id="val_saturation"></span></div>
+            <input id="saturation" type="range" min="0" max="255" step="1" />
+          </div>
+          <div>
+            <div>Sharpness <span id="val_sharpness"></span></div>
+            <input id="sharpness" type="range" min="0" max="255" step="1" />
+          </div>
+          <div>
+            <div>Zoom <span id="val_zoom"></span></div>
+            <input id="zoom" type="range" min="1" max="500" step="1" />
+          </div>
         </div>
       </div>
     </div>
@@ -84,7 +110,8 @@
       const cameraSelect = document.getElementById('cameraIndex');
       const saveDir = document.getElementById('saveDir');
       const browseBtn = document.getElementById('browseBtn');
-      const cameraName = document.getElementById('cameraName');
+      const gearBtn = document.getElementById('gearBtn');
+      const settingsPanel = document.getElementById('settingsPanel');
       const rescanBtn = document.getElementById('rescanBtn');
       const clockEl = document.getElementById('clock');
 
@@ -122,16 +149,25 @@
             if (idx === data.camera_index) opt.selected = true;
             cameraSelect.appendChild(opt);
           }
-          cameraName.innerHTML = '';
-          const names = data.available_device_names || [];
-          for (const name of names) {
-            const opt = document.createElement('option');
-            opt.value = name;
-            opt.textContent = name;
-            if (name === data.camera_device_name) opt.selected = true;
-            cameraName.appendChild(opt);
-          }
           saveDir.value = data.save_dir || '';
+          await loadProps();
+        } catch {}
+      }
+
+      async function loadProps() {
+        try {
+          const res = await fetch('/camera_props');
+          const data = await res.json();
+          if (!data.ok) return;
+          const p = data.props || {};
+          for (const key of ['brightness','contrast','saturation','sharpness','zoom']) {
+            if (p[key] != null && document.getElementById(key)) {
+              const el = document.getElementById(key);
+              el.value = p[key];
+              const valEl = document.getElementById('val_' + key);
+              if (valEl) valEl.textContent = p[key];
+            }
+          }
         } catch {}
       }
 
@@ -206,27 +242,6 @@
       saveDir.addEventListener('click', chooseDir);
       saveDir.addEventListener('change', applySettings);
       cameraSelect.addEventListener('change', applySettings);
-      cameraName.addEventListener('change', async () => {
-        statusEl.textContent = 'Applying camera name...';
-        try {
-          const res = await fetch('/config', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ camera_mode: 'name', camera_device_name: cameraName.value || '' })
-          });
-          const data = await res.json();
-          if (data.ok) {
-            statusEl.textContent = 'Camera switched.';
-            loadConfig();
-            const v = document.getElementById('video');
-            v.src = '/stream?ts=' + Date.now();
-          } else {
-            statusEl.textContent = 'Failed to switch: ' + (data.errors || []).join(', ');
-          }
-        } catch (e) {
-          statusEl.textContent = 'Switch failed';
-        }
-      });
 
       rescanBtn.addEventListener('click', async () => {
         statusEl.textContent = 'Rescanning cameras...';
@@ -243,6 +258,25 @@
           statusEl.textContent = 'Rescan error';
         }
       });
+
+      function toggleSettings() {
+        const visible = settingsPanel.style.display !== 'none';
+        settingsPanel.style.display = visible ? 'none' : 'block';
+      }
+      gearBtn.addEventListener('click', toggleSettings);
+
+      for (const key of ['brightness','contrast','saturation','sharpness','zoom']) {
+        const el = document.getElementById(key);
+        if (!el) continue;
+        el.addEventListener('input', async () => {
+          const body = {}; body[key] = parseFloat(el.value);
+          const valEl = document.getElementById('val_' + key);
+          if (valEl) valEl.textContent = el.value;
+          try {
+            await fetch('/camera_props', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+          } catch {}
+        });
+      }
 
       loadConfig();
     </script>

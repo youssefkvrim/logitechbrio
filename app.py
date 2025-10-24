@@ -436,6 +436,25 @@ class CameraManager:
                 return None
             return self.last_frame.copy()
 
+    def get_property(self, prop_id: int):
+        with self.lock:
+            if self.cap is None:
+                return None
+            try:
+                val = self.cap.get(prop_id)
+            except Exception:
+                return None
+        return val
+
+    def set_property(self, prop_id: int, value: float) -> bool:
+        with self.lock:
+            if self.cap is None:
+                return False
+            try:
+                return bool(self.cap.set(prop_id, float(value)))
+            except Exception:
+                return False
+
 
 app = Flask(__name__)
 
@@ -485,16 +504,68 @@ def get_config():
 
 @app.post("/rescan_cameras")
 def rescan_cameras():
-    # Force refresh of indices and device names
+    # Non-blocking rescan: trigger background refresh and return cached immediately
     try:
-        names = get_device_names_cached()
-        # Reset indices cache timestamp to force fresh scan
         with _INDICES_LOCK:
+            global _INDICES_REFRESHING
             _INDICES_CACHE["ts"] = 0.0
-        indices = get_indices_cached()
-        return jsonify({"ok": True, "available_indices": indices, "available_device_names": names})
+            if not _INDICES_REFRESHING:
+                _INDICES_REFRESHING = True
+                t = threading.Thread(target=_refresh_indices_worker, daemon=True)
+                t.start()
+        indices = _INDICES_CACHE.get("indices") or []
+        names = get_device_names_cached()
+        return jsonify({"ok": True, "available_indices": list(indices), "available_device_names": names})
     except Exception:
         return jsonify({"ok": False, "error": "Rescan failed"}), 500
+
+
+# Camera properties mapping
+PROP_MAP: dict[str, int] = {}
+try:
+    PROP_MAP["brightness"] = int(cv2.CAP_PROP_BRIGHTNESS)
+    PROP_MAP["contrast"] = int(cv2.CAP_PROP_CONTRAST)
+    PROP_MAP["saturation"] = int(cv2.CAP_PROP_SATURATION)
+    if hasattr(cv2, "CAP_PROP_SHARPNESS"):
+        PROP_MAP["sharpness"] = int(cv2.CAP_PROP_SHARPNESS)
+    if hasattr(cv2, "CAP_PROP_ZOOM"):
+        PROP_MAP["zoom"] = int(getattr(cv2, "CAP_PROP_ZOOM"))
+except Exception:
+    pass
+
+
+@app.get("/camera_props")
+def get_camera_props():
+    props: dict[str, object] = {}
+    for name, pid in PROP_MAP.items():
+        val = CAMERA.get_property(pid)
+        if val is None:
+            props[name] = None
+        else:
+            # Normalize to int if close to int
+            try:
+                ival = int(round(float(val)))
+                props[name] = ival
+            except Exception:
+                props[name] = float(val)
+    return jsonify({"ok": True, "props": props})
+
+
+@app.post("/camera_props")
+def set_camera_props():
+    data = request.get_json(silent=True) or {}
+    results: dict[str, bool] = {}
+    for name, value in data.items():
+        if name not in PROP_MAP:
+            continue
+        try:
+            v = float(value)
+        except Exception:
+            results[name] = False
+            continue
+        ok = CAMERA.set_property(PROP_MAP[name], v)
+        results[name] = bool(ok)
+    return jsonify({"ok": True, "results": results})
 
 
 @app.post("/config")
