@@ -196,7 +196,16 @@ def get_device_names_cached() -> list[str]:
     names = list_dshow_device_names_ffmpeg()
     if not names:
         # Provide sensible defaults if detection fails
-        names = ["Logitech BRIO", "Integrated Camera", "USB Camera"]
+        names = [
+            "Logitech BRIO",
+            "Logitech BRIO 4K",
+            "Logitech BRIO 4K Stream Edition",
+            "Logitech BRIO 500",
+            "BRIO",
+            "Logitech Webcam BRIO",
+            "Integrated Camera",
+            "USB Camera",
+        ]
     _DEVICE_NAMES_CACHE["ts"] = now
     _DEVICE_NAMES_CACHE["names"] = names
     return names
@@ -243,14 +252,63 @@ def open_camera_by_name(device_name: str):
     # Windows only: open by DirectShow device name for reliable BRIO selection
     if platform.system() != "Windows":
         return None
-    source = f"video={device_name}"
-    cap = cv2.VideoCapture(source, getattr(cv2, "CAP_DSHOW", 700))
-    if not cap.isOpened():
+    # Try several likely device name variants
+    base = device_name.strip()
+    candidates = [
+        base,
+        f"{base} (Video)",
+        f"{base} (video)",
+    ]
+    lower = base.lower()
+    if "logi" in lower or "logitech" in lower or "brio" in lower:
+        candidates.extend([
+            "Logitech BRIO",
+            "Logitech BRIO 4K",
+            "Logitech BRIO 4K Stream Edition",
+            "Logitech BRIO 500",
+            "BRIO",
+            "Logitech Webcam BRIO",
+        ])
+    tried = set()
+    for name in candidates:
+        if not name or name in tried:
+            continue
+        tried.add(name)
+        source = f"video={name}"
+        cap = cv2.VideoCapture(source, getattr(cv2, "CAP_DSHOW", 700))
+        if not cap.isOpened():
+            try:
+                cap.release()
+            except Exception:
+                pass
+            continue
+        # Configure and verify a frame
+        try:
+            try:
+                fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+                cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+            except Exception:
+                pass
+            for (w, h) in [(1920, 1080), (1280, 720), (640, 480)]:
+                try:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                except Exception:
+                    pass
+                time.sleep(0.12)
+                for _ in range(4):
+                    cap.read()
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    return cap
+        except Exception:
+            pass
         try:
             cap.release()
         except Exception:
             pass
-        return None
+    return None
     try:
         # Configure for stability
         try:
@@ -423,6 +481,20 @@ def get_config():
         "save_dir": CURRENT_SAVE_DIR,
         "windows_target_present": is_dir(WINDOWS_TARGET_DIR),
     })
+
+
+@app.post("/rescan_cameras")
+def rescan_cameras():
+    # Force refresh of indices and device names
+    try:
+        names = get_device_names_cached()
+        # Reset indices cache timestamp to force fresh scan
+        with _INDICES_LOCK:
+            _INDICES_CACHE["ts"] = 0.0
+        indices = get_indices_cached()
+        return jsonify({"ok": True, "available_indices": indices, "available_device_names": names})
+    except Exception:
+        return jsonify({"ok": False, "error": "Rescan failed"}), 500
 
 
 @app.post("/config")
