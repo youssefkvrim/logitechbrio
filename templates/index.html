@@ -66,7 +66,6 @@
     </div>
 
     <div class="block">
-      <button id="applyBtn">Apply settings</button>
       <button id="captureBtn">Capture</button>
     </div>
 
@@ -79,7 +78,6 @@
       const btn = document.getElementById('captureBtn');
       const cameraSelect = document.getElementById('cameraIndex');
       const saveDir = document.getElementById('saveDir');
-      const applyBtn = document.getElementById('applyBtn');
       const browseBtn = document.getElementById('browseBtn');
       const clockEl = document.getElementById('clock');
 
@@ -145,7 +143,7 @@
       input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); capture(); } });
       btn.addEventListener('click', capture);
 
-      applyBtn.addEventListener('click', async () => {
+      async function applySettings() {
         statusEl.textContent = 'Applying settings...';
         try {
           const res = await fetch('/config', {
@@ -157,7 +155,6 @@
           if (data.ok) {
             statusEl.textContent = 'Settings applied.';
             loadConfig();
-            // Refresh stream to pick up any changes
             const v = document.getElementById('video');
             v.src = '/stream?ts=' + Date.now();
           } else {
@@ -166,7 +163,7 @@
         } catch (e) {
           statusEl.textContent = 'Apply failed';
         }
-      });
+      }
 
       preset.addEventListener('change', () => {
         if (preset.value) input.value = '';
@@ -180,6 +177,7 @@
           if (data.ok && data.selected) {
             saveDir.value = data.selected;
             statusEl.textContent = 'Folder selected.';
+            applySettings();
           } else {
             statusEl.textContent = data.error ? ('Folder chooser: ' + data.error) : 'No folder selected';
           }
@@ -190,6 +188,8 @@
 
       browseBtn.addEventListener('click', chooseDir);
       saveDir.addEventListener('click', chooseDir);
+      saveDir.addEventListener('change', applySettings);
+      cameraSelect.addEventListener('change', applySettings);
 
       loadConfig();
     </script>
