@@ -68,29 +68,53 @@ def format_filename(user_base: str, for_windows: bool) -> str:
 
 
 def open_camera_by_index(index: int):
-    # Try likely backends per OS (prefer DirectShow first on Windows)
+    # Try likely backends per OS (prefer Media Foundation on Windows for index capture)
     system = platform.system()
     backends: list[int] = []
     if system == "Windows":
-        backends = [getattr(cv2, "CAP_DSHOW", 700), getattr(cv2, "CAP_MSMF", 1400), cv2.CAP_ANY]
+        backends = [getattr(cv2, "CAP_MSMF", 1400), getattr(cv2, "CAP_DSHOW", 700), cv2.CAP_ANY]
     elif system == "Darwin":
         backends = [cv2.CAP_AVFOUNDATION, cv2.CAP_ANY]
     else:
         backends = [cv2.CAP_V4L2, cv2.CAP_ANY]
 
+    # Candidate resolutions from high to low
+    resolutions = [(1920, 1080), (1280, 720), (640, 480)]
+
     for backend in backends:
         cap = cv2.VideoCapture(index, backend)
-        if cap.isOpened():
+        if not cap.isOpened():
             try:
-                # Configure for stability: resolution + MJPG + FPS
-                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                cap.release()
+            except Exception:
+                pass
+            continue
+        try:
+            # Set codec/fps if supported
+            try:
                 fourcc = cv2.VideoWriter_fourcc(*"MJPG")
                 cap.set(cv2.CAP_PROP_FOURCC, fourcc)
                 cap.set(cv2.CAP_PROP_FPS, 30)
             except Exception:
                 pass
-            return cap
+
+            # Try resolutions with warmup and verify a readable frame
+            for (w, h) in resolutions:
+                try:
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+                except Exception:
+                    pass
+                # small settle time
+                time.sleep(0.2)
+                # warm-up reads
+                for _ in range(5):
+                    cap.read()
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    return cap
+        except Exception:
+            pass
         try:
             cap.release()
         except Exception:
@@ -99,16 +123,29 @@ def open_camera_by_index(index: int):
 
 
 def probe_camera_index(index: int) -> bool:
-    cap = None
-    try:
-        cap = open_camera_by_index(index)
-        return cap is not None and cap.isOpened()
-    finally:
-        if cap is not None:
-            try:
-                cap.release()
-            except Exception:
-                pass
+    # Minimal probing without heavy config to avoid backend warnings where possible
+    system = platform.system()
+    if system == "Windows":
+        candidates = [getattr(cv2, "CAP_MSMF", 1400), cv2.CAP_ANY]
+    elif system == "Darwin":
+        candidates = [cv2.CAP_AVFOUNDATION, cv2.CAP_ANY]
+    else:
+        candidates = [cv2.CAP_V4L2, cv2.CAP_ANY]
+    for backend in candidates:
+        cap = None
+        try:
+            cap = cv2.VideoCapture(index, backend)
+            if cap.isOpened():
+                return True
+        except Exception:
+            pass
+        finally:
+            if cap is not None:
+                try:
+                    cap.release()
+                except Exception:
+                    pass
+    return False
 
 
 class CameraManager:
@@ -228,7 +265,7 @@ def stream():
 def get_config():
     # Scan a wider index range without forcing a frame grab
     available: list[int] = []
-    for i in range(10):
+    for i in range(16):
         if probe_camera_index(i):
             available.append(i)
     return jsonify({
