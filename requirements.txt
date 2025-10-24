@@ -1,4 +1,5 @@
 Flask==3.0.0
 opencv-python==4.10.0.84
+pygrabber==0.1
 
 

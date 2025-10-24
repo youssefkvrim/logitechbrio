@@ -17,6 +17,12 @@ try:
 except Exception as e:  # pragma: no cover
     raise RuntimeError("OpenCV (opencv-python) is required to run this app.") from e
 
+# Optional: pygrabber for DirectShow device enumeration (Windows)
+try:
+    from pygrabber.dshow_graph import FilterGraph as _PyGrabberFilterGraph  # type: ignore
+except Exception:
+    _PyGrabberFilterGraph = None
+
 
 APP_DIR = os.path.dirname(os.path.abspath(__file__))
 FALLBACK_DIR = os.path.join(APP_DIR, "captured_images")
@@ -185,6 +191,19 @@ def list_dshow_device_names_ffmpeg() -> list[str]:
         return []
 
 
+def list_dshow_device_names_pygrabber() -> list[str]:
+    if platform.system() != "Windows":
+        return []
+    if _PyGrabberFilterGraph is None:
+        return []
+    try:
+        graph = _PyGrabberFilterGraph()
+        names = graph.get_input_devices()
+        return list(names) if names else []
+    except Exception:
+        return []
+
+
 _DEVICE_NAMES_CACHE: dict[str, object] = {"ts": 0.0, "names": []}
 _INDICES_CACHE: dict[str, object] = {"ts": 0.0, "indices": []}
 _INDICES_LOCK = threading.Lock()
@@ -197,7 +216,10 @@ def get_device_names_cached() -> list[str]:
     if isinstance(ts, (int, float)) and (now - float(ts) < 10.0):
         cached = _DEVICE_NAMES_CACHE.get("names")
         return list(cached) if isinstance(cached, list) else []
-    names = list_dshow_device_names_ffmpeg()
+    # Prefer pygrabber (DirectShow) when available; else use ffmpeg
+    names = list_dshow_device_names_pygrabber()
+    if not names:
+        names = list_dshow_device_names_ffmpeg()
     if not names:
         # Provide sensible defaults if detection fails
         names = [
