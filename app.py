@@ -68,11 +68,11 @@ def format_filename(user_base: str, for_windows: bool) -> str:
 
 
 def open_camera_by_index(index: int):
-    # Try likely backends per OS
+    # Try likely backends per OS (prefer DirectShow first on Windows)
     system = platform.system()
     backends: list[int] = []
     if system == "Windows":
-        backends = [cv2.CAP_MSMF, cv2.CAP_DSHOW, cv2.CAP_ANY]
+        backends = [getattr(cv2, "CAP_DSHOW", 700), getattr(cv2, "CAP_MSMF", 1400), cv2.CAP_ANY]
     elif system == "Darwin":
         backends = [cv2.CAP_AVFOUNDATION, cv2.CAP_ANY]
     else:
@@ -81,15 +81,34 @@ def open_camera_by_index(index: int):
     for backend in backends:
         cap = cv2.VideoCapture(index, backend)
         if cap.isOpened():
-            # Try to set a sensible resolution; ignore if not supported
-            cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
-            cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+            try:
+                # Configure for stability: resolution + MJPG + FPS
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+                cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+            except Exception:
+                pass
             return cap
         try:
             cap.release()
         except Exception:
             pass
     return None
+
+
+def probe_camera_index(index: int) -> bool:
+    cap = None
+    try:
+        cap = open_camera_by_index(index)
+        return cap is not None and cap.isOpened()
+    finally:
+        if cap is not None:
+            try:
+                cap.release()
+            except Exception:
+                pass
 
 
 class CameraManager:
@@ -207,18 +226,11 @@ def stream():
 
 @app.get("/config")
 def get_config():
-    # Light scan for indices 0..5
+    # Scan a wider index range without forcing a frame grab
     available: list[int] = []
-    for i in range(6):
-        cap = open_camera_by_index(i)
-        if cap is not None:
-            ok, frame = cap.read()
-            if ok and frame is not None:
-                available.append(i)
-            try:
-                cap.release()
-            except Exception:
-                pass
+    for i in range(10):
+        if probe_camera_index(i):
+            available.append(i)
     return jsonify({
         "ok": True,
         "camera_index": CAMERA.camera_index,
@@ -255,6 +267,36 @@ def set_config():
             errors.append("Failed to use save_dir")
 
     return jsonify({"ok": len(errors) == 0, "errors": errors, "camera_index": CAMERA.camera_index, "save_dir": CURRENT_SAVE_DIR})
+
+
+@app.post("/choose_dir")
+def choose_dir():
+    # Open a native directory selection dialog on the server machine
+    try:
+        import tkinter as tk  # type: ignore
+        from tkinter import filedialog  # type: ignore
+    except Exception:
+        return jsonify({"ok": False, "error": "Folder dialog not available (tkinter missing)"}), 500
+
+    selected: str | None = None
+    try:
+        root = tk.Tk()
+        root.withdraw()
+        root.attributes("-topmost", True)
+        selected = filedialog.askdirectory(initialdir=CURRENT_SAVE_DIR or APP_DIR, mustexist=False, title="Choose save directory")
+        root.destroy()
+    except Exception:
+        return jsonify({"ok": False, "error": "Failed to open folder dialog"}), 500
+
+    if not selected:
+        return jsonify({"ok": False, "error": "No folder selected"}), 200
+
+    try:
+        ensure_dir(selected)
+    except Exception:
+        return jsonify({"ok": False, "error": "Cannot create/access selected folder"}), 400
+
+    return jsonify({"ok": True, "selected": selected})
 
 
 @app.post("/capture")

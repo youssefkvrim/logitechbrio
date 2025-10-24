@@ -32,7 +32,10 @@
       </div>
       <div>
         <label for="saveDir">Save directory</label>
-        <input id="saveDir" type="text" placeholder="Path to save images" />
+        <div class="row" style="grid-template-columns: 1fr auto; gap: 8px;">
+          <input id="saveDir" type="text" placeholder="Path to save images" />
+          <button id="browseBtn" type="button">Browse…</button>
+        </div>
       </div>
     </div>
 
@@ -77,6 +80,7 @@
       const cameraSelect = document.getElementById('cameraIndex');
       const saveDir = document.getElementById('saveDir');
       const applyBtn = document.getElementById('applyBtn');
+      const browseBtn = document.getElementById('browseBtn');
       const clockEl = document.getElementById('clock');
 
       function pad2(n) { return n.toString().padStart(2, '0'); }
@@ -167,6 +171,25 @@
       preset.addEventListener('change', () => {
         if (preset.value) input.value = '';
       });
+
+      async function chooseDir() {
+        statusEl.textContent = 'Opening folder chooser...';
+        try {
+          const res = await fetch('/choose_dir', { method: 'POST' });
+          const data = await res.json();
+          if (data.ok && data.selected) {
+            saveDir.value = data.selected;
+            statusEl.textContent = 'Folder selected.';
+          } else {
+            statusEl.textContent = data.error ? ('Folder chooser: ' + data.error) : 'No folder selected';
+          }
+        } catch (e) {
+          statusEl.textContent = 'Folder chooser failed';
+        }
+      }
+
+      browseBtn.addEventListener('click', chooseDir);
+      saveDir.addEventListener('click', chooseDir);
 
       loadConfig();
     </script>
