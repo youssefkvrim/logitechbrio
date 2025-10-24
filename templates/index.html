@@ -29,6 +29,8 @@
       <div>
         <label for="cameraIndex">Camera</label>
         <select id="cameraIndex"></select>
+        <label for="cameraName" style="margin-top:8px;">Device name (Windows)</label>
+        <select id="cameraName"></select>
       </div>
       <div>
         <label for="saveDir">Save directory</label>
@@ -79,6 +81,7 @@
       const cameraSelect = document.getElementById('cameraIndex');
       const saveDir = document.getElementById('saveDir');
       const browseBtn = document.getElementById('browseBtn');
+      const cameraName = document.getElementById('cameraName');
       const clockEl = document.getElementById('clock');
 
       function pad2(n) { return n.toString().padStart(2, '0'); }
@@ -114,6 +117,15 @@
             opt.textContent = 'Camera #' + idx + (idx === data.camera_index ? ' (current)' : '');
             if (idx === data.camera_index) opt.selected = true;
             cameraSelect.appendChild(opt);
+          }
+          cameraName.innerHTML = '';
+          const names = data.available_device_names || [];
+          for (const name of names) {
+            const opt = document.createElement('option');
+            opt.value = name;
+            opt.textContent = name;
+            if (name === data.camera_device_name) opt.selected = true;
+            cameraName.appendChild(opt);
           }
           saveDir.value = data.save_dir || '';
         } catch {}
@@ -190,6 +202,27 @@
       saveDir.addEventListener('click', chooseDir);
       saveDir.addEventListener('change', applySettings);
       cameraSelect.addEventListener('change', applySettings);
+      cameraName.addEventListener('change', async () => {
+        statusEl.textContent = 'Applying camera name...';
+        try {
+          const res = await fetch('/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ camera_mode: 'name', camera_device_name: cameraName.value || '' })
+          });
+          const data = await res.json();
+          if (data.ok) {
+            statusEl.textContent = 'Camera switched.';
+            loadConfig();
+            const v = document.getElementById('video');
+            v.src = '/stream?ts=' + Date.now();
+          } else {
+            statusEl.textContent = 'Failed to switch: ' + (data.errors || []).join(', ');
+          }
+        } catch (e) {
+          statusEl.textContent = 'Switch failed';
+        }
+      });
 
       loadConfig();
     </script>

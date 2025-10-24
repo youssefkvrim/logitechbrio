@@ -1,5 +1,7 @@
 import os
 import platform
+import shutil
+import subprocess
 import threading
 import time
 from datetime import datetime
@@ -148,20 +150,159 @@ def probe_camera_index(index: int) -> bool:
     return False
 
 
+def list_dshow_device_names_ffmpeg() -> list[str]:
+    # Best-effort: use ffmpeg to list DirectShow video devices
+    if platform.system() != "Windows":
+        return []
+    if shutil.which("ffmpeg") is None:
+        return []
+    try:
+        proc = subprocess.run(
+            ["ffmpeg", "-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            timeout=4,
+        )
+        out = proc.stdout or ""
+        names: list[str] = []
+        in_video = False
+        for raw in out.splitlines():
+            line = raw.strip()
+            if "DirectShow video devices" in line:
+                in_video = True
+                continue
+            if in_video and "DirectShow audio devices" in line:
+                break
+            if in_video and line.startswith("\"") and line.endswith("\""):
+                names.append(line.strip('"'))
+        return names
+    except Exception:
+        return []
+
+
+_DEVICE_NAMES_CACHE: dict[str, object] = {"ts": 0.0, "names": []}
+_INDICES_CACHE: dict[str, object] = {"ts": 0.0, "indices": []}
+_INDICES_LOCK = threading.Lock()
+_INDICES_REFRESHING = False
+
+
+def get_device_names_cached() -> list[str]:
+    now = time.time()
+    ts = _DEVICE_NAMES_CACHE.get("ts") or 0.0
+    if isinstance(ts, (int, float)) and (now - float(ts) < 10.0):
+        cached = _DEVICE_NAMES_CACHE.get("names")
+        return list(cached) if isinstance(cached, list) else []
+    names = list_dshow_device_names_ffmpeg()
+    if not names:
+        # Provide sensible defaults if detection fails
+        names = ["Logitech BRIO", "Integrated Camera", "USB Camera"]
+    _DEVICE_NAMES_CACHE["ts"] = now
+    _DEVICE_NAMES_CACHE["names"] = names
+    return names
+
+
+def _refresh_indices_worker():
+    global _INDICES_REFRESHING
+    try:
+        found: list[int] = []
+        for i in range(16):
+            if probe_camera_index(i):
+                found.append(i)
+        with _INDICES_LOCK:
+            _INDICES_CACHE["ts"] = time.time()
+            _INDICES_CACHE["indices"] = found
+    finally:
+        _INDICES_REFRESHING = False
+
+
+def get_indices_cached() -> list[int]:
+    now = time.time()
+    with _INDICES_LOCK:
+        ts = _INDICES_CACHE.get("ts") or 0.0
+        if isinstance(ts, (int, float)) and (now - float(ts) < 5.0):
+            cached = _INDICES_CACHE.get("indices")
+            return list(cached) if isinstance(cached, list) else []
+    # Quick first-fill: probe a small range synchronously
+    quick_found: list[int] = []
+    for i in range(4):
+        if probe_camera_index(i):
+            quick_found.append(i)
+    with _INDICES_LOCK:
+        _INDICES_CACHE["ts"] = now
+        _INDICES_CACHE["indices"] = quick_found
+        global _INDICES_REFRESHING
+        if not _INDICES_REFRESHING:
+            _INDICES_REFRESHING = True
+            t = threading.Thread(target=_refresh_indices_worker, daemon=True)
+            t.start()
+    return quick_found
+
+
+def open_camera_by_name(device_name: str):
+    # Windows only: open by DirectShow device name for reliable BRIO selection
+    if platform.system() != "Windows":
+        return None
+    source = f"video={device_name}"
+    cap = cv2.VideoCapture(source, getattr(cv2, "CAP_DSHOW", 700))
+    if not cap.isOpened():
+        try:
+            cap.release()
+        except Exception:
+            pass
+        return None
+    try:
+        # Configure for stability
+        try:
+            fourcc = cv2.VideoWriter_fourcc(*"MJPG")
+            cap.set(cv2.CAP_PROP_FOURCC, fourcc)
+            cap.set(cv2.CAP_PROP_FPS, 30)
+        except Exception:
+            pass
+        for (w, h) in [(1920, 1080), (1280, 720), (640, 480)]:
+            try:
+                cap.set(cv2.CAP_PROP_FRAME_WIDTH, w)
+                cap.set(cv2.CAP_PROP_FRAME_HEIGHT, h)
+            except Exception:
+                pass
+            time.sleep(0.15)
+            for _ in range(4):
+                cap.read()
+            ok, frame = cap.read()
+            if ok and frame is not None:
+                return cap
+    except Exception:
+        pass
+    try:
+        cap.release()
+    except Exception:
+        pass
+    return None
+
+
 class CameraManager:
-    def __init__(self, index: int = 0) -> None:
+    def __init__(self, index: int = 0, mode: str = "index", device_name: str | None = None) -> None:
         self.lock = threading.Lock()
         self.camera_index = index
+        self.camera_mode = mode  # 'index' or 'name'
+        self.camera_device_name = device_name or ""
         self.cap = None
         self.thread = None
         self.running = False
         self.last_frame = None
 
-    def start(self, index: int | None = None) -> bool:
+    def start(self, index: int | None = None, device_name: str | None = None, mode: str | None = None) -> bool:
         if index is not None:
             self.camera_index = int(index)
+        if device_name is not None:
+            self.camera_device_name = str(device_name)
+        if mode in ("index", "name"):
+            self.camera_mode = str(mode)
         self.stop()
-        self.cap = open_camera_by_index(self.camera_index)
+        if self.camera_mode == "name" and self.camera_device_name:
+            self.cap = open_camera_by_name(self.camera_device_name) or open_camera_by_index(self.camera_index)
+        else:
+            self.cap = open_camera_by_index(self.camera_index)
         if self.cap is None:
             return False
         self.running = True
@@ -209,9 +350,15 @@ class CameraManager:
 
     def switch_camera(self, index: int) -> bool:
         index = int(index)
-        if self.running and index == self.camera_index:
+        if self.running and self.camera_mode == "index" and index == self.camera_index:
             return True
-        return self.start(index)
+        return self.start(index=index, mode="index")
+
+    def switch_camera_name(self, device_name: str) -> bool:
+        device_name = str(device_name)
+        if self.running and self.camera_mode == "name" and device_name == self.camera_device_name:
+            return True
+        return self.start(device_name=device_name, mode="name")
 
     def get_jpeg(self) -> bytes | None:
         frame = None
@@ -240,7 +387,9 @@ CURRENT_SAVE_DIR = DEFAULT_SAVE_DIR
 CURRENT_FOR_WINDOWS = DEFAULT_FOR_WINDOWS
 
 # Camera manager initialized at startup
-CAMERA = CameraManager(index=int(os.environ.get("CAMERA_INDEX", "0")))
+CAMERA_MODE = os.environ.get("CAMERA_MODE", "index") if os.environ.get("CAMERA_MODE", "index") in ("index", "name") else "index"
+CAMERA_DEVICE_NAME = os.environ.get("CAMERA_DEVICE_NAME", "")
+CAMERA = CameraManager(index=int(os.environ.get("CAMERA_INDEX", "0")), mode=CAMERA_MODE, device_name=CAMERA_DEVICE_NAME)
 CAMERA.start()
 
 
@@ -263,15 +412,14 @@ def stream():
 
 @app.get("/config")
 def get_config():
-    # Scan a wider index range without forcing a frame grab
-    available: list[int] = []
-    for i in range(16):
-        if probe_camera_index(i):
-            available.append(i)
+    available: list[int] = get_indices_cached()
     return jsonify({
         "ok": True,
         "camera_index": CAMERA.camera_index,
+        "camera_mode": CAMERA.camera_mode,
+        "camera_device_name": CAMERA.camera_device_name,
         "available_indices": available,
+        "available_device_names": get_device_names_cached(),
         "save_dir": CURRENT_SAVE_DIR,
         "windows_target_present": is_dir(WINDOWS_TARGET_DIR),
     })
@@ -287,10 +435,30 @@ def set_config():
     if "camera_index" in data:
         try:
             cam_idx = int(data["camera_index"])
-            if not CAMERA.switch_camera(cam_idx):
-                errors.append("Failed to switch camera")
+            # Apply only if mode is index or unspecified
+            desired_mode = str(data.get("camera_mode") or CAMERA.camera_mode)
+            if desired_mode == "index":
+                if not CAMERA.switch_camera(cam_idx):
+                    errors.append("Failed to switch camera")
         except Exception:
             errors.append("Invalid camera_index")
+
+    # Camera mode
+    if "camera_mode" in data:
+        mode = str(data["camera_mode"])
+        if mode in ("index", "name"):
+            CAMERA.camera_mode = mode
+        else:
+            errors.append("Invalid camera_mode")
+
+    # Camera device name (Windows DirectShow)
+    if "camera_device_name" in data:
+        name = str(data["camera_device_name"]).strip()
+        if name:
+            if not CAMERA.switch_camera_name(name):
+                errors.append("Failed to switch camera by name")
+        else:
+            CAMERA.camera_device_name = ""
 
     # Save dir
     if "save_dir" in data:
@@ -303,7 +471,14 @@ def set_config():
         except Exception:
             errors.append("Failed to use save_dir")
 
-    return jsonify({"ok": len(errors) == 0, "errors": errors, "camera_index": CAMERA.camera_index, "save_dir": CURRENT_SAVE_DIR})
+    return jsonify({
+        "ok": len(errors) == 0,
+        "errors": errors,
+        "camera_index": CAMERA.camera_index,
+        "camera_mode": CAMERA.camera_mode,
+        "camera_device_name": CAMERA.camera_device_name,
+        "save_dir": CURRENT_SAVE_DIR,
+    })
 
 
 @app.post("/choose_dir")
