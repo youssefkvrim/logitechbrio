@@ -17,20 +17,19 @@ pip install -r requirements.txt
 python app.py
 ```
 
-4. Open `http://127.0.0.1:5000` in a browser.
+4. Open `http://localhost:8000` in a browser.
 
 ## Usage
 
-- Live preview appears at the top of the page.
+- Live preview appears at the top of the page, with a live clock at top-right.
 - Choose the camera index from the dropdown, set a save directory, then click "Apply settings".
 - Select a predefined name or type a custom name in the input.
 - Click "Capture" (or press Enter in the custom input) to save instantly.
 
 ## File naming
 
-- Pattern: `image_<USER_INPUT>_pc<DDMMYY>T<HH:MM:SS><+HH>.jpg`
-- Example (non-Windows): `image_M7-3_006_pc251024T10:20:32+02.jpg`
-- On Windows, `:` is not allowed in filenames, so times are saved as `HH-MM-SS` instead.
+- Pattern: `image_<USER_INPUT>_pc<DDMMYY>T<HHMMSS><+HH>.jpg`
+- Example: `image_M7-3_006_pc251024T102032+02.jpg`
 - The timezone label uses hours only (e.g., `+02`).
 
 ## Camera selection

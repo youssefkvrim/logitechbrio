@@ -14,9 +14,11 @@
       .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
       .block { margin-top: 12px; }
       .video { width: 100%; background: #000; aspect-ratio: 16/9; object-fit: cover; }
+      #clock { position: fixed; top: 8px; right: 12px; font-size: 14px; color: #333; }
     </style>
   </head>
   <body>
+    <div id="clock"></div>
     <h2>Logitech BRIO Capture</h2>
 
     <div class="block">
@@ -75,6 +77,24 @@
       const cameraSelect = document.getElementById('cameraIndex');
       const saveDir = document.getElementById('saveDir');
       const applyBtn = document.getElementById('applyBtn');
+      const clockEl = document.getElementById('clock');
+
+      function pad2(n) { return n.toString().padStart(2, '0'); }
+      function monthAbbr(i) {
+        return ['jan','feb','mar','apr','may','jun','jul','aug','sep','oct','nov','dec'][i] || '';
+      }
+      function renderClock() {
+        const d = new Date();
+        const dd = pad2(d.getDate());
+        const mmm = monthAbbr(d.getMonth());
+        const yyyy = d.getFullYear();
+        const hh = pad2(d.getHours());
+        const mm = pad2(d.getMinutes());
+        const ss = pad2(d.getSeconds());
+        clockEl.textContent = `${dd} ${mmm} ${yyyy}  ${hh}:${mm}:${ss}`;
+      }
+      setInterval(renderClock, 500);
+      renderClock();
 
       function chosenName() {
         return (preset.value || input.value || '').trim();

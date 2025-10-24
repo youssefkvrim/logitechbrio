@@ -54,7 +54,7 @@ def sanitize_filename(name: str, for_windows: bool) -> str:
 def format_filename(user_base: str, for_windows: bool) -> str:
     now = datetime.now().astimezone()
     date_part = now.strftime("%d%m%y")
-    time_part = now.strftime("%H:%M:%S")
+    time_part = now.strftime("%H%M%S")
 
     # Build timezone label as +HH (hours only), matching the example style
     offset = now.utcoffset() or now.tzinfo.utcoffset(now)  # type: ignore[arg-type]
@@ -62,9 +62,6 @@ def format_filename(user_base: str, for_windows: bool) -> str:
     sign = "+" if total_seconds >= 0 else "-"
     hours = abs(total_seconds) // 3600
     tz_label = f"{sign}{hours:02d}"
-
-    if for_windows:
-        time_part = time_part.replace(":", "-")  # Windows forbids ':' in filenames
 
     base = sanitize_filename(user_base, for_windows)
     return f"image_{base}_pc{date_part}T{time_part}{tz_label}.jpg"
@@ -286,6 +283,6 @@ def capture():
 
 
 if __name__ == "__main__":
-    app.run(host="127.0.0.1", port=5000, debug=False)
+    app.run(host="localhost", port=8000, debug=False)
 
 
