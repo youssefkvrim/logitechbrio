@@ -8,36 +8,108 @@
       body { font-family: system-ui, -apple-system, Segoe UI, Roboto, sans-serif; max-width: 640px; margin: 40px auto; padding: 0 16px; }
       h2 { margin: 0 0 16px; }
       label { display: block; margin-bottom: 8px; }
-      input { width: 100%; padding: 12px; font-size: 16px; box-sizing: border-box; }
+      input, select { width: 100%; padding: 12px; font-size: 16px; box-sizing: border-box; }
       button { padding: 10px 16px; font-size: 16px; margin-top: 12px; }
       .status { margin-top: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; white-space: pre-wrap; }
+      .row { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+      .block { margin-top: 12px; }
+      .video { width: 100%; background: #000; aspect-ratio: 16/9; object-fit: cover; }
     </style>
   </head>
   <body>
     <h2>Logitech BRIO Capture</h2>
-    <label for="baseName">Enter name prefix, then press Enter:</label>
-    <input id="baseName" type="text" placeholder="e.g., M7-3_006" autofocus />
-    <button id="captureBtn">Capture</button>
+
+    <div class="block">
+      <img id="video" class="video" src="/stream" alt="Live" />
+    </div>
+
+    <div class="row block">
+      <div>
+        <label for="cameraIndex">Camera</label>
+        <select id="cameraIndex"></select>
+      </div>
+      <div>
+        <label for="saveDir">Save directory</label>
+        <input id="saveDir" type="text" placeholder="Path to save images" />
+      </div>
+    </div>
+
+    <div class="row block">
+      <div>
+        <label for="presetName">Select name</label>
+        <select id="presetName">
+          <option value="">Custom…</option>
+          <option>M7-3_005</option>
+          <option>M7-3_006</option>
+          <option>M7-3_025ITK</option>
+          <option>M7-3_1-2ITG</option>
+          <option>M7-3_1-2PFX</option>
+          <option>2CN2_005</option>
+          <option>2CN2_007</option>
+          <option>2CN2_008</option>
+          <option>2CN2_ITK57U</option>
+          <option>R55_010</option>
+          <option>R55_011</option>
+          <option>R55_012ITG</option>
+          <option>R55_ITK57U</option>
+        </select>
+      </div>
+      <div>
+        <label for="baseName">Custom name (optional)</label>
+        <input id="baseName" type="text" placeholder="e.g., M7-3_006" />
+      </div>
+    </div>
+
+    <div class="block">
+      <button id="applyBtn">Apply settings</button>
+      <button id="captureBtn">Capture</button>
+    </div>
+
     <div class="status" id="status"></div>
 
     <script>
       const input = document.getElementById('baseName');
+      const preset = document.getElementById('presetName');
       const statusEl = document.getElementById('status');
       const btn = document.getElementById('captureBtn');
+      const cameraSelect = document.getElementById('cameraIndex');
+      const saveDir = document.getElementById('saveDir');
+      const applyBtn = document.getElementById('applyBtn');
+
+      function chosenName() {
+        return (preset.value || input.value || '').trim();
+      }
+
+      async function loadConfig() {
+        try {
+          const res = await fetch('/config');
+          const data = await res.json();
+          if (!data.ok) return;
+          cameraSelect.innerHTML = '';
+          for (const idx of data.available_indices) {
+            const opt = document.createElement('option');
+            opt.value = idx;
+            opt.textContent = 'Camera #' + idx + (idx === data.camera_index ? ' (current)' : '');
+            if (idx === data.camera_index) opt.selected = true;
+            cameraSelect.appendChild(opt);
+          }
+          saveDir.value = data.save_dir || '';
+        } catch {}
+      }
 
       async function capture() {
-        const base = input.value || '';
+        const base = chosenName();
         statusEl.textContent = 'Capturing...';
         try {
           const res = await fetch('/capture', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ user_base_name: base })
+            body: JSON.stringify({ user_base_name: base, save_dir: saveDir.value || undefined })
           });
           const data = await res.json();
           if (data.ok) {
             statusEl.textContent = 'Saved: ' + data.saved_path;
-            input.select();
+            if (!preset.value) input.select();
           } else {
             statusEl.textContent = 'Error: ' + (data.error || 'Unknown error');
           }
@@ -46,13 +118,37 @@
         }
       }
 
-      input.addEventListener('keydown', (e) => {
-        if (e.key === 'Enter') {
-          e.preventDefault();
-          capture();
+      input.addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); capture(); } });
+      btn.addEventListener('click', capture);
+
+      applyBtn.addEventListener('click', async () => {
+        statusEl.textContent = 'Applying settings...';
+        try {
+          const res = await fetch('/config', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ camera_index: parseInt(cameraSelect.value, 10), save_dir: saveDir.value || undefined })
+          });
+          const data = await res.json();
+          if (data.ok) {
+            statusEl.textContent = 'Settings applied.';
+            loadConfig();
+            // Refresh stream to pick up any changes
+            const v = document.getElementById('video');
+            v.src = '/stream?ts=' + Date.now();
+          } else {
+            statusEl.textContent = 'Failed to apply: ' + (data.errors || []).join(', ');
+          }
+        } catch (e) {
+          statusEl.textContent = 'Apply failed';
         }
       });
-      btn.addEventListener('click', capture);
+
+      preset.addEventListener('change', () => {
+        if (preset.value) input.value = '';
+      });
+
+      loadConfig();
     </script>
   </body>
 </html>
