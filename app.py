@@ -8,6 +8,10 @@ from datetime import datetime
 
 from flask import Flask, Response, jsonify, render_template, request
 
+if platform.system() == "Windows":
+    # Prefer MSMF over DSHOW by index, can be overridden via env
+    os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_MSMF", "1000")
+    os.environ.setdefault("OPENCV_VIDEOIO_PRIORITY_DSHOW", "0")
 try:
     import cv2  # type: ignore
 except Exception as e:  # pragma: no cover
@@ -468,6 +472,28 @@ CAMERA_MODE = os.environ.get("CAMERA_MODE", "index") if os.environ.get("CAMERA_M
 CAMERA_DEVICE_NAME = os.environ.get("CAMERA_DEVICE_NAME", "")
 CAMERA = CameraManager(index=int(os.environ.get("CAMERA_INDEX", "0")), mode=CAMERA_MODE, device_name=CAMERA_DEVICE_NAME)
 CAMERA.start()
+
+
+def _autoselect_brio_worker():
+    # If running on Windows, try to switch to BRIO by name shortly after startup
+    try:
+        if platform.system() != "Windows":
+            return
+        time.sleep(0.6)
+        names = get_device_names_cached()
+        for name in names:
+            if isinstance(name, str) and "brio" in name.lower():
+                # Attempt switch by name; ignore result
+                try:
+                    CAMERA.switch_camera_name(name)
+                except Exception:
+                    pass
+                break
+    except Exception:
+        pass
+
+
+threading.Thread(target=_autoselect_brio_worker, daemon=True).start()
 
 
 @app.get("/")
