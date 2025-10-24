@@ -409,6 +409,8 @@ class CameraManager:
             except Exception:
                 pass
         self.cap = None
+        with self.lock:
+            self.last_frame = None
 
     def switch_camera(self, index: int) -> bool:
         index = int(index)
@@ -480,10 +482,15 @@ def _autoselect_brio_worker():
         if platform.system() != "Windows":
             return
         time.sleep(0.6)
+        # Only attempt if still on index mode and no frames yet
+        with CAMERA.lock:
+            has_frame = CAMERA.last_frame is not None
+            current_mode = CAMERA.camera_mode
+        if has_frame or current_mode != "index":
+            return
         names = get_device_names_cached()
         for name in names:
             if isinstance(name, str) and "brio" in name.lower():
-                # Attempt switch by name; ignore result
                 try:
                     CAMERA.switch_camera_name(name)
                 except Exception:
@@ -574,6 +581,23 @@ def get_camera_props():
                 props[name] = ival
             except Exception:
                 props[name] = float(val)
+    # Include boolean-like flags if present
+    try:
+        if hasattr(cv2, "CAP_PROP_AUTO_WB"):
+            awb = CAMERA.get_property(int(getattr(cv2, "CAP_PROP_AUTO_WB")))
+            props["auto_white_balance"] = None if awb is None else bool(float(awb) >= 0.5)
+    except Exception:
+        pass
+    try:
+        if hasattr(cv2, "CAP_PROP_AUTO_EXPOSURE"):
+            ae = CAMERA.get_property(int(getattr(cv2, "CAP_PROP_AUTO_EXPOSURE")))
+            if ae is None:
+                props["auto_exposure"] = None
+            else:
+                v = float(ae)
+                props["auto_exposure"] = bool(v >= 0.5) if platform.system() != "Windows" else bool(v >= 0.5)
+    except Exception:
+        pass
     return jsonify({"ok": True, "props": props})
 
 
@@ -581,16 +605,34 @@ def get_camera_props():
 def set_camera_props():
     data = request.get_json(silent=True) or {}
     results: dict[str, bool] = {}
-    for name, value in data.items():
-        if name not in PROP_MAP:
-            continue
+    # Numeric props
+    for name, pid in PROP_MAP.items():
+        if name in data:
+            try:
+                v = float(data[name])
+            except Exception:
+                results[name] = False
+                continue
+            ok = CAMERA.set_property(pid, v)
+            results[name] = bool(ok)
+    # Boolean-like flags
+    if hasattr(cv2, "CAP_PROP_AUTO_WB") and "auto_white_balance" in data:
         try:
-            v = float(value)
+            val = 1.0 if bool(data["auto_white_balance"]) else 0.0
+            ok = CAMERA.set_property(int(getattr(cv2, "CAP_PROP_AUTO_WB")), val)
+            results["auto_white_balance"] = bool(ok)
         except Exception:
-            results[name] = False
-            continue
-        ok = CAMERA.set_property(PROP_MAP[name], v)
-        results[name] = bool(ok)
+            results["auto_white_balance"] = False
+    if hasattr(cv2, "CAP_PROP_AUTO_EXPOSURE") and "auto_exposure" in data:
+        try:
+            if platform.system() == "Windows":
+                val = 0.75 if bool(data["auto_exposure"]) else 0.25
+            else:
+                val = 1.0 if bool(data["auto_exposure"]) else 0.0
+            ok = CAMERA.set_property(int(getattr(cv2, "CAP_PROP_AUTO_EXPOSURE")), val)
+            results["auto_exposure"] = bool(ok)
+        except Exception:
+            results["auto_exposure"] = False
     return jsonify({"ok": True, "results": results})
 
 

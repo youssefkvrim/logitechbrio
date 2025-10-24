@@ -201,7 +201,7 @@
           const res = await fetch('/config', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ camera_index: parseInt(cameraSelect.value, 10), save_dir: saveDir.value || undefined })
+            body: JSON.stringify({ camera_mode: 'index', camera_index: parseInt(cameraSelect.value, 10), save_dir: saveDir.value || undefined })
           });
           const data = await res.json();
           if (data.ok) {
